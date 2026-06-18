@@ -39,19 +39,53 @@ def parse_rtl(req: ParseRequest):
     if not os.path.exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
+    import io
+    import sys
+    from contextlib import redirect_stdout, redirect_stderr
+    import traceback
+
+    output_buffer = io.StringIO()
+    
     if req.file_path.endswith('.f'):
-        hierarchy, sources = build_hierarchy(req.file_path)
-        return {
-            "hierarchy": hierarchy,
-            "sources": sources
-        }
+        try:
+            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                hierarchy, sources = build_hierarchy(req.file_path)
+            
+            return {
+                "success": True,
+                "hierarchy": hierarchy,
+                "sources": sources,
+                "compile_logs": output_buffer.getvalue()
+            }
+        except Exception as e:
+            error_msg = f"Error parsing project:\\n{traceback.format_exc()}"
+            output_buffer.write("\\n" + error_msg)
+            return {
+                "success": False,
+                "hierarchy": [],
+                "sources": {},
+                "compile_logs": output_buffer.getvalue()
+            }
     else:
         # Fallback for single .v file
-        hierarchy, sources = build_hierarchy(req.file_path) # Need to wrap in .f conceptually, but simple for now
-        return {
-            "hierarchy": hierarchy,
-            "sources": {os.path.basename(req.file_path): sources[os.path.basename(req.file_path)]}
-        }
+        try:
+            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                hierarchy, sources = build_hierarchy(req.file_path)
+            return {
+                "success": True,
+                "hierarchy": hierarchy,
+                "sources": {os.path.basename(req.file_path): sources[os.path.basename(req.file_path)]},
+                "compile_logs": output_buffer.getvalue()
+            }
+        except Exception as e:
+            error_msg = f"Error parsing file:\\n{traceback.format_exc()}"
+            output_buffer.write("\\n" + error_msg)
+            return {
+                "success": False,
+                "hierarchy": [],
+                "sources": {},
+                "compile_logs": output_buffer.getvalue()
+            }
 
 @app.post("/api/trace/drive")
 def api_trace_drive(req: TraceRequest):

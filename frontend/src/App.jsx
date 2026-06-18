@@ -18,9 +18,13 @@ function App() {
   const [projectFile, setProjectFile] = useState('');
 
   const [activeBottomTab, setActiveBottomTab] = useState('trace');
+  const [compileLogs, setCompileLogs] = useState('');
   const [traceResults, setTraceResults] = useState([]);
   const [historyStack, setHistoryStack] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
 
   const [leftWidth, setLeftWidth] = useState(250);
   const [bottomHeight, setBottomHeight] = useState(200);
@@ -71,17 +75,20 @@ function App() {
         throw new Error("Native API not available.");
       }
       
-      if (res.status === 'success') {
-        setHierarchy(res.hierarchy);
-        setSources(res.sources);
-        const firstFile = Object.keys(res.sources)[0];
+      if (res.status === 'success' || res.success === true) {
+        setHierarchy(res.hierarchy || []);
+        setSources(res.sources || {});
+        setCompileLogs(res.compile_logs || '');
+        const firstFile = res.sources ? Object.keys(res.sources)[0] : null;
         if (firstFile) {
           setCurrentFile(firstFile);
           setOpenFiles([firstFile]);
         }
         addMessage('success', `Loaded ${filePath} successfully.`);
       } else {
-        addMessage('error', 'Failed to load project: ' + res.message);
+        setCompileLogs(res.compile_logs || res.message || 'Unknown error');
+        setActiveBottomTab('compile');
+        addMessage('error', 'Failed to load project, check Compile logs.');
       }
     } catch (err) {
       addMessage('error', 'Failed to load project: ' + err.message);
@@ -268,6 +275,21 @@ function App() {
     }
   };
 
+  const closeProject = () => {
+    setHierarchy([]);
+    setSources({});
+    setOpenFiles([]);
+    setCurrentFile('');
+    setTraceResults([]);
+    setMessages([]);
+    setCompileLogs('');
+    setHistoryStack([]);
+    setHistoryIndex(-1);
+    setSearchQuery('');
+    setSearchResults([]);
+    addMessage('info', 'Project closed.');
+  };
+
   const TreeNode = ({ node }) => {
     const [expanded, setExpanded] = useState(true);
     const hasChildren = node.children && node.children.length > 0;
@@ -276,9 +298,32 @@ function App() {
       <div className="tree-node">
         <div className="tree-label" onClick={() => {
             setExpanded(!expanded);
-            if (node.module === 'cpu') setCurrentFile('cpu.v');
-            if (node.module === 'decode') setCurrentFile('decode.v');
-            if (node.module === 'alu') setCurrentFile('alu.v');
+            
+            // Cross-probing: find the module or instance in sources
+            let targetFile = null;
+            let targetLine = -1;
+            
+            for (const file of Object.keys(sources)) {
+              const lines = sources[file].split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.includes(`module ${node.module}`) || line.includes(`${node.module} `)) {
+                   if (!targetFile) {
+                     targetFile = file;
+                     targetLine = i + 1;
+                   }
+                }
+                // Try to find instance name
+                if (node.name !== node.module && line.includes(node.name) && line.includes(node.module)) {
+                   targetFile = file;
+                   targetLine = i + 1;
+                }
+              }
+            }
+
+            if (targetFile) {
+              jumpToFileLine(targetFile, targetLine);
+            }
         }}>
           <span className="icon">
             {hasChildren ? (expanded ? <ChevronDown size={14}/> : <ChevronRight size={14}/>) : <span style={{width: 14}}/>}
@@ -337,9 +382,16 @@ function App() {
     <div className="app-container" onClick={closeContextMenu}>
       <header className="app-header">
         <div className="logo"><Activity size={18} /> CircuitTrace</div>
-        <button onClick={handleOpenFile} className="btn-open">
-          Open .f File
-        </button>
+        <div style={{display: 'flex', gap: '8px'}}>
+          <button onClick={handleOpenFile} className="btn-open">
+            Open .f File
+          </button>
+          {hierarchy.length > 0 && (
+            <button onClick={closeProject} className="btn-open" style={{backgroundColor: 'var(--msg-error)', color: 'white', borderColor: 'transparent'}}>
+              Close Project
+            </button>
+          )}
+        </div>
       </header>
       
       <div className="main-content">
@@ -411,14 +463,71 @@ function App() {
       <div className="panel message-panel" style={{ height: bottomHeight, flexShrink: 0 }}>
         <div className="bottom-tabs">
           <div className={`bottom-tab ${activeBottomTab === 'console' ? 'active' : ''}`} onClick={() => setActiveBottomTab('console')}>
-            <Terminal size={14} /> Message Console
+            <Terminal size={14} /> General
+          </div>
+          <div className={`bottom-tab ${activeBottomTab === 'compile' ? 'active' : ''}`} onClick={() => setActiveBottomTab('compile')}>
+            <FileCode size={14} /> Compile
           </div>
           <div className={`bottom-tab ${activeBottomTab === 'trace' ? 'active' : ''}`} onClick={() => setActiveBottomTab('trace')}>
             <ListTree size={14} /> Trace Results {traceResults.length > 0 && `(${traceResults.length})`}
           </div>
+          <div className={`bottom-tab ${activeBottomTab === 'search' ? 'active' : ''}`} onClick={() => setActiveBottomTab('search')}>
+            <Search size={14} /> Search {searchResults.length > 0 && `(${searchResults.length})`}
+          </div>
         </div>
         
         <div className="panel-body">
+          {activeBottomTab === 'search' && (
+            <div className="search-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!searchQuery) return;
+                const results = [];
+                Object.keys(sources).forEach(file => {
+                  const lines = sources[file].split('\n');
+                  lines.forEach((line, index) => {
+                    if (line.includes(searchQuery)) {
+                      results.push({ file, line: index + 1, content: line });
+                    }
+                  });
+                });
+                setSearchResults(results);
+                addMessage('info', `Found ${results.length} results for "${searchQuery}"`);
+              }} style={{ padding: '8px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+                <input 
+                  type="text" 
+                  value={searchQuery} 
+                  onChange={(e) => setSearchQuery(e.target.value)} 
+                  placeholder="Search in files... (Press Enter)" 
+                  style={{ flex: 1, padding: '4px 8px', background: 'rgba(0,0,0,0.2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: '4px' }}
+                />
+                <button type="submit" className="btn-open" style={{ padding: '4px 12px' }}>Search</button>
+              </form>
+              <div className="search-results" style={{ overflowY: 'auto', flex: 1 }}>
+                {searchResults.length === 0 ? (
+                  <div className="empty-state">No search results.</div>
+                ) : (
+                  <table className="trace-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '200px' }}>File(Line)</th>
+                        <th>Content</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {searchResults.map((res, i) => (
+                        <tr key={i} onClick={() => jumpToFileLine(res.file, res.line)} style={{ cursor: 'pointer' }} className="trace-child-row">
+                          <td style={{ color: 'var(--accent)' }}>{res.file} ({res.line})</td>
+                          <td style={{ fontFamily: 'monospace', whiteSpace: 'pre' }}>{res.content.trim()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          )}
+
           {activeBottomTab === 'console' && (
             <div className="messages">
               {messages.map((m, i) => (
@@ -426,6 +535,12 @@ function App() {
                   <span className="time">[{m.time}]</span> {m.text}
                 </div>
               ))}
+            </div>
+          )}
+
+          {activeBottomTab === 'compile' && (
+            <div className="compile-logs" style={{ padding: '8px', overflowY: 'auto', height: '100%', backgroundColor: '#1e1e1e', color: '#d4d4d4', fontFamily: 'monospace', whiteSpace: 'pre-wrap', fontSize: '12px', userSelect: 'text' }}>
+              {compileLogs ? compileLogs : 'No compile logs available.'}
             </div>
           )}
           

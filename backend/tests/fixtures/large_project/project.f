@@ -1,3 +1,9 @@
-cpu.v
-decode.v
-alu.v
+soc_top.v
+cpu_core.v
+fetch.v
+decode_unit.v
+execute.v
+memory_ctrl.v
+apb_bus.v
+uart.v
+timer.v
