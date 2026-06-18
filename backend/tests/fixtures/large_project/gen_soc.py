@@ -314,12 +314,13 @@ endmodule
 }
 
 project_f = ""
+project_files = list(files.keys())
 for filename, content in files.items():
     with open(os.path.join(base_dir, filename), "w") as f:
-        f.write(content.strip() + "\\n")
-    project_f += f"{filename}\\n"
+        f.write(content.strip() + "\n")
 
+project_files.append("tb.v")
 with open(os.path.join(base_dir, "project.f"), "w") as f:
-    f.write(project_f.strip() + "\\n")
+    f.write("\n".join(project_files) + "\n")
 
 print("Files generated properly.")

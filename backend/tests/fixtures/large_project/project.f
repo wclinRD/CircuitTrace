@@ -7,3 +7,4 @@ memory_ctrl.v
 apb_bus.v
 uart.v
 timer.v
+tb.v

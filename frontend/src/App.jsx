@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
-import { ChevronRight, ChevronDown, Cpu, Activity, LayoutList, FileCode, ArrowLeft, ArrowRight, Terminal, ListTree, Search, X } from 'lucide-react';
+import { ChevronRight, ChevronDown, Cpu, Activity, LayoutList, FileCode, ArrowLeft, ArrowRight, Terminal, ListTree, Search, X, Waves } from 'lucide-react';
+import WaveformCanvas from './WaveformCanvas';
 import './App.css';
 
 function App() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const isStandaloneWaveform = urlParams.get('page') === 'waveform';
+  const standaloneVcdPath = urlParams.get('vcd') || '';
+
   const [hierarchy, setHierarchy] = useState([]);
   const [sources, setSources] = useState({});
   const [currentFile, setCurrentFile] = useState('');
@@ -19,6 +24,9 @@ function App() {
 
   const [activeBottomTab, setActiveBottomTab] = useState('trace');
   const [compileLogs, setCompileLogs] = useState('');
+  const [simulationLogs, setSimulationLogs] = useState('');
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [vcdFile, setVcdFile] = useState('');
   const [traceResults, setTraceResults] = useState([]);
   const [historyStack, setHistoryStack] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -63,6 +71,31 @@ function App() {
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, []);
+
+  useEffect(() => {
+    const handleTraceRequest = () => {
+       if (isStandaloneWaveform || !projectFile) return;
+       try {
+         const reqStr = localStorage.getItem('waveform_trace_request');
+         if (reqStr) {
+            const req = JSON.parse(reqStr);
+            // Verify timestamp isn't old, or clear it. 
+            // Clearing it prevents multiple triggers, but localStorage is shared.
+            if (req.signal) {
+               traceSignal('drive', req.signal);
+               // Open trace tab automatically
+               setActiveBottomTab('trace');
+            }
+         }
+       } catch (e) {}
+    };
+    window.addEventListener('storage', handleTraceRequest);
+    window.addEventListener('waveform_trace_request_updated', handleTraceRequest);
+    return () => {
+      window.removeEventListener('storage', handleTraceRequest);
+      window.removeEventListener('waveform_trace_request_updated', handleTraceRequest);
+    };
+  }, [isStandaloneWaveform, projectFile, traceResults]);
 
   const loadProject = async (filePath) => {
     addMessage('info', `Loading project from ${filePath}...`);
@@ -182,6 +215,15 @@ function App() {
       if (wordInfo) traceSignal('connection', wordInfo.word);
     });
 
+    const triggerWaveform = () => {
+      const position = editor.getPosition();
+      if (!position) return;
+      const wordInfo = editor.getModel().getWordAtPosition(position);
+      if (wordInfo) addToWaveform(wordInfo.word);
+    };
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyW, triggerWaveform);
+    editor.addCommand(monaco.KeyMod.WinCtrl | monaco.KeyCode.KeyW, triggerWaveform);
+
     editor.onMouseUp((e) => {
       if (e.event.detail === 2) {
         const position = e.target.position;
@@ -275,6 +317,33 @@ function App() {
     }
   };
 
+  const addToWaveform = (signalName) => {
+    try {
+       const existingStr = localStorage.getItem('waveform_signals');
+       let signals = existingStr ? JSON.parse(existingStr) : [];
+       
+       // Because verilog variables are often scoped (e.g. soc_top.u_cpu.clk),
+       // and double-clicking only gives the leaf name (e.g. clk), we might need to qualify it.
+       // For this MVP, let's just use the clicked word. If the user clicked "clk", 
+       // the backend will search for matching signals.
+       // Ideally we'd find its full path via trace results, but let's start simple.
+       
+       if (!signals.includes(signalName)) {
+         signals.push(signalName);
+         localStorage.setItem('waveform_signals', JSON.stringify(signals));
+         // Trigger local event since storage event only fires on other windows natively
+         window.dispatchEvent(new Event('waveform_signals_updated'));
+         // IPC call to sync with popped-out windows
+         if (window.pywebview && window.pywebview.api) {
+           window.pywebview.api.sync_waveform_signals(JSON.stringify(signals));
+         }
+         addMessage('success', `Added ${signalName} to Waveform`);
+       }
+    } catch(err) {
+      console.error(err);
+    }
+  };
+
   const closeProject = () => {
     setHierarchy([]);
     setSources({});
@@ -283,11 +352,55 @@ function App() {
     setTraceResults([]);
     setMessages([]);
     setCompileLogs('');
+    setSimulationLogs('');
+    setIsSimulating(false);
     setHistoryStack([]);
     setHistoryIndex(-1);
     setSearchQuery('');
     setSearchResults([]);
     addMessage('info', 'Project closed.');
+  };
+
+  const runSimulation = async () => {
+    if (!projectFile) {
+      addMessage('warning', 'No project loaded to simulate.');
+      return;
+    }
+    setIsSimulating(true);
+    setSimulationLogs('Starting simulation...');
+    setActiveBottomTab('simulation');
+    
+    try {
+      let res;
+      if (window.pywebview && window.pywebview.api) {
+        res = await window.pywebview.api.simulate_project(projectFile);
+      } else {
+        // Fallback for web interface
+        const req = await fetch('http://localhost:8000/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_path: projectFile })
+        });
+        res = await req.json();
+      }
+      
+      if (res.success) {
+        addMessage('success', 'Simulation completed successfully.');
+        // Auto-set VCD path assuming dump.vcd or wave.vcd might be generated
+        if (projectFile) {
+           const dir = projectFile.substring(0, projectFile.lastIndexOf('/'));
+           setVcdFile(`${dir}/dump.vcd`); // Try default name
+        }
+      } else {
+        addMessage('error', 'Simulation failed.');
+      }
+      setSimulationLogs(res.logs);
+    } catch (err) {
+      addMessage('error', 'Simulation error: ' + err.message);
+      setSimulationLogs('Simulation error: ' + err.message);
+    } finally {
+      setIsSimulating(false);
+    }
   };
 
   const TreeNode = ({ node }) => {
@@ -377,6 +490,14 @@ function App() {
       </>
     );
   };
+
+  if (isStandaloneWaveform) {
+    return (
+      <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', background: '#1e1e1e', overflow: 'hidden' }}>
+        <WaveformCanvas vcdPath={standaloneVcdPath} isActive={true} />
+      </div>
+    );
+  }
 
   return (
     <div className="app-container" onClick={closeContextMenu}>
@@ -468,6 +589,12 @@ function App() {
           <div className={`bottom-tab ${activeBottomTab === 'compile' ? 'active' : ''}`} onClick={() => setActiveBottomTab('compile')}>
             <FileCode size={14} /> Compile
           </div>
+          <div className={`bottom-tab ${activeBottomTab === 'simulation' ? 'active' : ''}`} onClick={() => setActiveBottomTab('simulation')}>
+            <Activity size={14} /> Simulation
+          </div>
+          <div className={`bottom-tab ${activeBottomTab === 'waveform' ? 'active' : ''}`} onClick={() => setActiveBottomTab('waveform')}>
+            <Waves size={14} /> Waveform
+          </div>
           <div className={`bottom-tab ${activeBottomTab === 'trace' ? 'active' : ''}`} onClick={() => setActiveBottomTab('trace')}>
             <ListTree size={14} /> Trace Results {traceResults.length > 0 && `(${traceResults.length})`}
           </div>
@@ -543,6 +670,42 @@ function App() {
               {compileLogs ? compileLogs : 'No compile logs available.'}
             </div>
           )}
+
+          {activeBottomTab === 'simulation' && (
+            <div className="simulation-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <div className="simulation-toolbar" style={{ padding: '8px', borderBottom: '1px solid var(--border)', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button onClick={runSimulation} disabled={!projectFile || isSimulating} className="btn-open" style={{ backgroundColor: isSimulating ? 'var(--bg-lighter)' : 'var(--accent)' }}>
+                  {isSimulating ? 'Running...' : 'Run Simulation'}
+                </button>
+              </div>
+              <div className="simulation-logs" style={{ flex: 1, padding: '8px', overflowY: 'auto', backgroundColor: '#1e1e1e', color: '#00ff00', fontFamily: 'monospace', whiteSpace: 'pre-wrap', fontSize: '12px', userSelect: 'text' }}>
+                {simulationLogs ? simulationLogs : 'Click Run Simulation to start.'}
+              </div>
+            </div>
+          )}
+
+          <div 
+            className="waveform-container" 
+            style={{ 
+              display: activeBottomTab === 'waveform' ? 'flex' : 'none', 
+              flexDirection: 'column', 
+              height: '100%' 
+            }}
+          >
+            <div style={{ padding: '8px', borderBottom: '1px solid #3c3c3c', display: 'flex', gap: '8px' }}>
+              <input 
+                type="text" 
+                value={vcdFile} 
+                readOnly 
+                placeholder="No VCD file loaded" 
+                style={{ flex: 1, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #3c3c3c', padding: '4px 8px' }}
+              />
+              <button onClick={() => window.pywebview?.api?.open_waveform_window(vcdFile)} disabled={!vcdFile} className="btn-open" style={{ padding: '4px 12px' }}>Pop-out Window</button>
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <WaveformCanvas vcdPath={vcdFile} isActive={activeBottomTab === 'waveform'} />
+            </div>
+          </div>
           
           {activeBottomTab === 'trace' && (
             <div className="trace-table-container">
@@ -584,6 +747,9 @@ function App() {
           </div>
           <div className="menu-item" onClick={() => { traceSignal('connection', contextMenu.word); closeContextMenu(); }}>
             <Search size={14} style={{marginRight: 6, verticalAlign: 'middle'}}/> Connectivity (Alt+Shift+C)
+          </div>
+          <div className="menu-item" onClick={() => { addToWaveform(contextMenu.word); closeContextMenu(); }}>
+            <Waves size={14} style={{marginRight: 6, verticalAlign: 'middle'}}/> Add to Waveform (Ctrl+W)
           </div>
         </div>
       )}
