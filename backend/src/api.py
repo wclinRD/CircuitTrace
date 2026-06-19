@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import os
-from hierarchy import build_hierarchy, parse_filelist
+from project_manager import ProjectManager
 from tracer import trace_drive, trace_load, trace_connection
 
 app = FastAPI()
@@ -50,53 +50,30 @@ def parse_rtl(req: ParseRequest):
     if not os.path.exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
-    import io
-    import sys
-    from contextlib import redirect_stdout, redirect_stderr
     import traceback
 
-    output_buffer = io.StringIO()
-    
-    if req.file_path.endswith('.f'):
-        try:
-            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
-                hierarchy, sources = build_hierarchy(req.file_path)
+    try:
+        pm = ProjectManager.get_instance()
+        hierarchy, sources = pm.load_project(req.file_path)
+        
+        # Determine source mapping for single file fallback if needed
+        # In pyslang we load all.
+        if not req.file_path.endswith('.f'):
+            sources = {os.path.basename(req.file_path): sources.get(os.path.basename(req.file_path), "")}
             
-            return {
-                "success": True,
-                "hierarchy": hierarchy,
-                "sources": sources,
-                "compile_logs": output_buffer.getvalue()
-            }
-        except Exception as e:
-            error_msg = f"Error parsing project:\\n{traceback.format_exc()}"
-            output_buffer.write("\\n" + error_msg)
-            return {
-                "success": False,
-                "hierarchy": [],
-                "sources": {},
-                "compile_logs": output_buffer.getvalue()
-            }
-    else:
-        # Fallback for single .v file
-        try:
-            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
-                hierarchy, sources = build_hierarchy(req.file_path)
-            return {
-                "success": True,
-                "hierarchy": hierarchy,
-                "sources": {os.path.basename(req.file_path): sources[os.path.basename(req.file_path)]},
-                "compile_logs": output_buffer.getvalue()
-            }
-        except Exception as e:
-            error_msg = f"Error parsing file:\\n{traceback.format_exc()}"
-            output_buffer.write("\\n" + error_msg)
-            return {
-                "success": False,
-                "hierarchy": [],
-                "sources": {},
-                "compile_logs": output_buffer.getvalue()
-            }
+        return {
+            "success": True,
+            "hierarchy": hierarchy,
+            "sources": sources,
+            "compile_logs": "Parsed with pyslang."
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "hierarchy": [],
+            "sources": {},
+            "compile_logs": f"Error parsing project:\\n{traceback.format_exc()}"
+        }
 
 @app.post("/api/trace/drive")
 def api_trace_drive(req: TraceRequest):

@@ -39,6 +39,17 @@ const WaveformCanvas = ({ vcdPath, isActive }) => {
       // 先嘗試從 URL query string 取得 port（pop-out 視窗會帶這個 param）
       const urlParams = new URLSearchParams(window.location.search);
       const portFromUrl = parseInt(urlParams.get('surfer_port') || '0', 10);
+      const signalsFromUrl = urlParams.get('signals');
+
+      if (signalsFromUrl) {
+        try {
+          const sigs = JSON.parse(decodeURIComponent(signalsFromUrl));
+          localStorage.setItem('waveform_signals', JSON.stringify(sigs));
+        } catch (e) {
+          console.error("Failed to parse signals from URL", e);
+        }
+      }
+
       if (portFromUrl > 0) {
         surferPortRef.current = portFromUrl;
         setSurferPort(portFromUrl);
@@ -101,10 +112,30 @@ const WaveformCanvas = ({ vcdPath, isActive }) => {
     setSurferReady(true);
     if (vcdPath) {
       // 稍等讓 Surfer egui 完成初始化再送 LoadUrl
-      setTimeout(() => loadVcd(vcdPath), 1000);
+      setTimeout(() => {
+        loadVcd(vcdPath);
+        // 波形載入可能需要數秒鐘，我們用 polling 的方式連續發送 AddVariables，
+        // 確保 Surfer 在載入完成後能正確收到並加入信號 (Surfer 內部會處理重複加入的問題)
+        let attempts = 0;
+        const interval = setInterval(() => {
+          attempts++;
+          if (attempts > 8) {
+            clearInterval(interval);
+            return;
+          }
+          try {
+            const stored = localStorage.getItem('waveform_signals');
+            if (stored) {
+              const signals = JSON.parse(stored);
+              setAddedSignals(signals);
+              sendToSurfer({ command: 'AddVariables', vars: signals });
+            }
+          } catch (e) {}
+        }, 1000);
+      }, 1000);
     }
     loadHierarchy();
-  }, [vcdPath, loadVcd, loadHierarchy]);
+  }, [vcdPath, loadVcd, loadHierarchy, sendToSurfer]);
 
   // ────────────────────────────────────────────────
   // 波形 → 程式碼方向：監聽 Surfer iframe 的 SignalClicked 訊息
@@ -229,7 +260,7 @@ const WaveformCanvas = ({ vcdPath, isActive }) => {
           // newSignals 是字串陣列
           const merged = Array.from(new Set([...addedSignals, ...newSignals]));
           setAddedSignals(merged);
-          localStorage.setItem('waveform_added_signals', JSON.stringify(merged));
+          localStorage.setItem('waveform_signals', JSON.stringify(merged));
           window.dispatchEvent(new Event('storage'));
           if (surferReady) {
             sendToSurfer({ command: 'AddVariables', vars: newSignals });

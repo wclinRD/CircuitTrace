@@ -207,13 +207,16 @@ class DesktopApi:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def open_waveform_window(self, vcd_path):
+    def open_waveform_window(self, vcd_path, signals_json="[]"):
+        import urllib.parse
         html_path = os.path.join(FRONTEND_DIST, "index.html")
+        encoded_signals = urllib.parse.quote(signals_json)
         # 將 surfer_port 一起傳入 URL，新視窗不需要等待 pywebviewready
         url = (f'file://{html_path}'
                f'?page=waveform'
                f'&vcd={vcd_path}'
-               f'&surfer_port={_surfer_actual_port}')
+               f'&surfer_port={_surfer_actual_port}'
+               f'&signals={encoded_signals}')
         webview.create_window(
             f'CircuitTrace Waveform - {os.path.basename(vcd_path)}', 
             url,

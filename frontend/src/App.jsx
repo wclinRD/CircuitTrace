@@ -82,7 +82,7 @@ function App() {
             // Verify timestamp isn't old, or clear it. 
             // Clearing it prevents multiple triggers, but localStorage is shared.
             if (req.signal) {
-               traceSignal('drive', req.signal);
+               traceSignal('drive', req.full || req.signal);
                // Open trace tab automatically
                setActiveBottomTab('trace');
             }
@@ -700,7 +700,17 @@ function App() {
                 placeholder="No VCD file loaded" 
                 style={{ flex: 1, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #3c3c3c', padding: '4px 8px' }}
               />
-              <button onClick={() => window.pywebview?.api?.open_waveform_window(vcdFile)} disabled={!vcdFile} className="btn-open" style={{ padding: '4px 12px' }}>Pop-out Window</button>
+              <button 
+                onClick={() => {
+                  const sigs = localStorage.getItem('waveform_signals') || '[]';
+                  window.pywebview?.api?.open_waveform_window(vcdFile, sigs);
+                }} 
+                disabled={!vcdFile} 
+                className="btn-open" 
+                style={{ padding: '4px 12px' }}
+              >
+                Pop-out Window
+              </button>
             </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <WaveformCanvas vcdPath={vcdFile} isActive={activeBottomTab === 'waveform'} />

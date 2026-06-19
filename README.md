@@ -8,17 +8,23 @@ CircuitTrace 是一款專為 macOS 打造的高效能 Verilog 追蹤與檢視工
 *   **高速程式碼編輯器**：內建 Monaco Editor，提供流暢的 Verilog 語法高亮、全域快捷鍵與多頁籤切換支援。
 *   **樹狀追蹤面板 (OneTrace)**：
     *   **Trace Driver / Trace Load / Trace Connection**：一鍵追蹤訊號來源與去向。
+    *   **精準 AST 定位**：透過 `pyslang` 強大的 `lookupName` 支援完整層級路徑精準解析（如 `tb.u_soc.u_cpu.clk`）。
     *   **階層式 Tree-Table**：追蹤結果以清晰的樹狀表格呈現。
     *   **智慧跳轉**：點擊追蹤結果，編輯器會自動跳轉至對應的檔案與行數。
     *   **快捷鍵支援**：支援 `Alt+Shift+D` / `L` / `C` 快速觸發 Trace。
     *   **右鍵管理**：支援在追蹤群組上點擊右鍵以清除部分或所有歷史紀錄。
+*   **波形檢視與互動 (Surfer Wasm Engine)**：
+    *   內建高效能的 Rust/WebAssembly 波形檢視器 (Surfer)。
+    *   支援在程式碼與波形之間 **雙向互動 (Cross-Probing)**：包含從程式碼 `Ctrl+W` 快速將信號加入波形，以及從波形視窗雙擊信號反查原始碼 Driver。
+    *   **獨立彈出視窗 (Pop-out Window)**：支援將波形獨立為多視窗檢視，並智慧繼承主視窗中已選取的觀察信號。
 *   **模組階層檢視 (Module Hierarchy)**：一目瞭然地檢視專案中所有的 Module 依賴關係，並點擊展開對應的檔案。
 *   **高自由度的 UI 佈局**：支援水平與垂直滑鼠拖曳（Resizer），自訂最適合您的視窗大小。
 
 ## 🛠️ 技術棧 (Tech Stack)
 
 *   **Frontend**: React 19, Vite, Monaco Editor, Lucide React (Icons)
-*   **Backend**: Python 3.11, pywebview (Native UI Bridge), Pyverilog (AST / Dataflow 解析)
+*   **Backend**: Python 3.11, FastAPI, pywebview (Native UI Bridge)
+*   **EDA Engine**: `pyslang` (High-performance SystemVerilog AST / Dataflow Parsing)
 *   **Bundler**: PyInstaller (macOS App 打包)
 
 ## 🚀 如何編譯與執行 (Build & Run)
@@ -65,7 +71,7 @@ CircuitTrace/
 │   └── src/App.css     # 核心樣式與 Flex 佈局
 ├── backend/            # Python 後端邏輯
 │   ├── src/api.py      # 提供給前端的 API
-│   ├── src/tracer.py   # Pyverilog 追蹤與解析邏輯
+│   ├── src/tracer.py   # pyslang AST 追蹤與解析邏輯
 │   └── src/desktop_app.py # pywebview 視窗建立入口
 ├── build_release.sh    # macOS App 自動打包腳本
 └── CircuitTrace.icns   # 專屬 App 圖示

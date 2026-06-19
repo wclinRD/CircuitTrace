@@ -1,61 +1,117 @@
 import os
+import pyslang
 import re
+from project_manager import ProjectManager
 
-def parse_filelist(f_path):
-    base_dir = os.path.dirname(f_path)
-    files = []
-    if f_path.endswith('.f'):
-        with open(f_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("//"):
-                    files.append(os.path.join(base_dir, line))
+def find_target_instance(module_name):
+    pm = ProjectManager.get_instance()
+    if not pm.compilation:
+        return None
+    
+    root = pm.compilation.getRoot()
+    target_inst = None
+    
+    def find_mod(inst):
+        nonlocal target_inst
+        if inst.body.definition.name == module_name:
+            target_inst = inst
+            return
+        for member in inst.body:
+            if isinstance(member, pyslang.ast.InstanceSymbol):
+                find_mod(member)
+            elif isinstance(member, pyslang.ast.InstanceArraySymbol):
+                for elem in member.elements:
+                    find_mod(elem)
+                    
+    for top in root.topInstances:
+        find_mod(top)
+        if target_inst:
+            break
+            
+    return target_inst
+
+def trace_signal(file_path, module_name, signal_name, trace_type):
+    pm = ProjectManager.get_instance()
+    if pm.current_project_path != file_path:
+        pm.load_project(file_path)
+        
+    root = pm.compilation.getRoot()
+    
+    if '.' in signal_name:
+        parts = signal_name.split('.')
+        leaf_signal = parts[-1]
+        inst_path = '.'.join(parts[:-1])
+        sym = root.lookupName(inst_path)
+        inst = sym if sym else (root.topInstances[0] if root.topInstances else root)
+        ast_signal_name = leaf_signal
     else:
-        files.append(f_path)
-    return files
-
-def find_signal_locations(file_path, signal_name, trace_type):
-    # trace_type: 'drive' or 'load'
-    files = parse_filelist(file_path)
+        inst = find_target_instance(module_name)
+        if not inst:
+            inst = root.topInstances[0] if root.topInstances else root
+        ast_signal_name = signal_name
+        
     results = []
     
-    # Heuristic regex patterns for Verilog
-    drive_pattern = re.compile(rf'\bassign\s+{signal_name}\s*=|'
-                               rf'\boutput\s+.*?\b{signal_name}\b|'
-                               rf'\b{signal_name}\s*<=|'
-                               rf'\b{signal_name}\s*=')
-                               
-    load_pattern = re.compile(rf'=\s*[^;]*\b{signal_name}\b|'
-                              rf'\binput\s+.*?\b{signal_name}\b|'
-                              rf'\bif\s*\([^)]*\b{signal_name}\b[^)]*\)|'
-                              rf'\bcase\s*\([^)]*\b{signal_name}\b[^)]*\)')
-                              
-    connection_pattern = re.compile(rf'\.\w+\s*\(\s*{signal_name}\s*\)')
-
-    pattern = drive_pattern if trace_type == 'drive' else load_pattern
-    
-    for f in files:
-        if not os.path.exists(f): continue
-        basename = os.path.basename(f)
-        module_name = basename.replace('.v', '') # Rough guess based on filename
+    if not inst:
+        results.append({
+            "module": module_name, 
+            "port": signal_name, 
+            "file": os.path.basename(file_path), 
+            "line": 1, 
+            "type": f"{trace_type} (module not found)"
+        })
+        return results
         
-        with open(f, 'r') as file_obj:
-            lines = file_obj.readlines()
-            for i, line in enumerate(lines):
-                # Check for direct match or module instantiation connection
-                if pattern.search(line) or connection_pattern.search(line):
-                    results.append({
-                        "module": module_name,
-                        "port": signal_name,
-                        "file": basename,
-                        "line": i + 1,
-                        "type": trace_type
-                    })
+    sm = pm.compilation.sourceManager
+    seen = set()
+    
+    def add_result(node):
+        loc = node.sourceRange.start if hasattr(node, 'sourceRange') else None
+        if not loc:
+            loc = node.location if hasattr(node, 'location') else None
+            
+        line = sm.getLineNumber(loc) if loc else 1
+        filename = sm.getFileName(loc) if loc else os.path.basename(file_path)
+        
+        sig = f"{filename}:{line}"
+        if sig not in seen:
+            seen.add(sig)
+            results.append({
+                "module": getattr(inst, 'name', module_name),
+                "port": signal_name,
+                "file": os.path.basename(filename),
+                "line": line,
+                "type": trace_type
+            })
+
+    def visitor(node):
+        kind_str = str(getattr(node, 'kind', ''))
+        
+        if 'Assign' in kind_str and hasattr(node, 'left') and hasattr(node, 'right'):
+            sym = node.left.getSymbolReference()
+            is_lhs = sym and sym.name == ast_signal_name
+            
+            if trace_type == 'drive' and is_lhs:
+                add_result(node)
+            elif trace_type == 'load':
+                if not is_lhs:
+                    if hasattr(node.right, 'syntax') and ast_signal_name in str(node.right.syntax):
+                        add_result(node)
+                        
+        elif trace_type == 'load' and ('Statement' in kind_str or 'Expression' in kind_str):
+            if hasattr(node, 'syntax') and node.syntax:
+                if re.search(rf'\b{ast_signal_name}\b', str(node.syntax)):
+                    add_result(node)
                     
-    # If no results found, provide a dummy result so the UI still responds
+        elif 'Port' in kind_str:
+            if hasattr(node, 'name') and node.name == ast_signal_name:
+                add_result(node)
+                
+    inst.visit(visitor)
+    
     if not results:
         results.append({
-            "module": "unknown", 
+            "module": module_name, 
             "port": signal_name, 
             "file": os.path.basename(file_path), 
             "line": 1, 
@@ -65,23 +121,31 @@ def find_signal_locations(file_path, signal_name, trace_type):
     return results
 
 def trace_drive(file_path, module_name, signal_name):
-    return find_signal_locations(file_path, signal_name, 'drive')
+    return trace_signal(file_path, module_name, signal_name, 'drive')
 
 def trace_load(file_path, module_name, signal_name):
-    return find_signal_locations(file_path, signal_name, 'load')
+    return trace_signal(file_path, module_name, signal_name, 'load')
 
 def trace_connection(file_path, module_name, signal_name):
     drives = trace_drive(file_path, module_name, signal_name)
     loads = trace_load(file_path, module_name, signal_name)
     
-    # Deduplicate
     seen = set()
     res = []
     for x in drives + loads:
+        if "not found" in x['type']: continue
         sig = f"{x['file']}:{x['line']}"
         if sig not in seen:
             seen.add(sig)
             x['type'] = 'connection'
             res.append(x)
             
+    if not res:
+        res.append({
+            "module": module_name, 
+            "port": signal_name, 
+            "file": os.path.basename(file_path), 
+            "line": 1, 
+            "type": "connection (not found)"
+        })
     return res
